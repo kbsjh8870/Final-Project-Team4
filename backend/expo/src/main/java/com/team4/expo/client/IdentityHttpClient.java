@@ -2,6 +2,8 @@ package com.team4.expo.client;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.team4.common.error.CustomException;
 import com.team4.common.error.ErrorCode;
 import lombok.extern.slf4j.Slf4j;
@@ -38,8 +40,27 @@ public class IdentityHttpClient implements IdentityClient {
         this.objectMapper = objectMapper;
     }
 
+    // 참가업체 프로필은 잘 바뀌지 않으니 10분간 캐시에 보관
+    private final Cache<Long, ExhibitorProfile> exhibitorProfiles = Caffeine.newBuilder()
+            .expireAfterWrite(Duration.ofMinutes(10))
+            .maximumSize(1_000)
+            .build();
+
     @Override
     public Optional<ExhibitorProfile> getExhibitorProfile(Long userId) {
+        ExhibitorProfile cached = exhibitorProfiles.getIfPresent(userId); // 캐시 확인
+        if (cached != null) {
+            return Optional.of(cached);
+        }
+
+        // cache.get(key, 매핑 펑션)으로 매핑 펑션 안에서 HTTP를 기다리면 캐시 내부 락이 잡혀 다른 업체 조회까지 막힐 수 있음
+        // 따라서 캐시 밖에서 조회하고 성공한 결과만 저장
+        Optional<ExhibitorProfile> profile = fetchExhibitorProfile(userId); // http 조회
+        profile.ifPresent(p -> exhibitorProfiles.put(userId, p)); // 성공 시 저장
+        return profile;
+    }
+
+    private Optional<ExhibitorProfile> fetchExhibitorProfile(Long userId) {
         try {
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(identityBaseUrl + "/internal/identity/users/" + userId))
